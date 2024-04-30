@@ -20,10 +20,16 @@ import (
 	"context"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+const (
+	addPodNameLabelAnnotation = "egarciam.com/add-pod-name-label"
+	podNameLabel              = "egarciam.com/pod-name"
 )
 
 // PodReconciler reconciles a Pod object
@@ -44,10 +50,52 @@ type PodReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.16.3/pkg/reconcile
 func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	log := log.FromContext(ctx)
 
 	// TODO(user): your logic here
+	var pod corev1.Pod
+	if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
+		if apierrors.IsNotFound(err) {
+			// To ignore, maybe is been deleted
+			return ctrl.Result{}, nil
+		}
+		log.Error(err, "Unable to fecth Pod %s", req.Name)
+		return ctrl.Result{}, err
+	}
 
+	// Add or remove label
+	labelShouldBePresent := pod.Annotations[addPodNameLabelAnnotation] == "true"
+	labelIsPresent := pod.Annotations[podNameLabel] == pod.Name
+
+	if labelShouldBePresent == labelIsPresent {
+		log.Info("no update needed")
+		return ctrl.Result{}, nil
+	}
+
+	if labelShouldBePresent {
+		if pod.Labels == nil {
+			pod.Labels = make(map[string]string)
+		}
+		pod.Labels[podNameLabel] = pod.Name
+		log.Info("adding label")
+
+	} else {
+		delete(pod.Labels, podNameLabel)
+		log.Info("removing label")
+	}
+
+	//Update the pod
+
+	if err := r.Update(ctx, &pod); err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		log.Error(err, "Unable to update pod")
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{}, nil
 }
 
